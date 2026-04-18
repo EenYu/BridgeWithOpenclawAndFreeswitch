@@ -1,0 +1,344 @@
+openapi: 3.1.0
+info:
+  title: OpenClaw FreeSWITCH Bridge API
+  version: 0.1.0
+  description: |
+    Frozen v1 backend contract for the bridge service.
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/health:
+    get:
+      summary: Service health snapshot
+      operationId: getHealth
+      responses:
+        "200":
+          description: Health status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /api/sessions:
+    get:
+      summary: List current sessions
+      operationId: listSessions
+      responses:
+        "200":
+          description: Current sessions as a bare array
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SessionSummary"
+  /api/sessions/{id}:
+    get:
+      summary: Get a single session detail
+      operationId: getSession
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionDetail"
+        "404":
+          description: Session not found
+  /api/sessions/{id}/interrupt:
+    post:
+      summary: Interrupt current TTS playback
+      operationId: interruptSession
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "202":
+          description: Interrupt accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AckResponse"
+        "404":
+          description: Session not found
+  /api/settings/providers:
+    post:
+      summary: Update in-memory provider settings
+      operationId: updateProviderSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderSettings"
+      responses:
+        "200":
+          description: Updated provider settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSettings"
+  /ws:
+    get:
+      summary: Dashboard WebSocket channel
+      description: |
+        Server emits fixed event envelopes:
+        `{ type, sessionId, timestamp, data }`
+      responses:
+        "101":
+          description: WebSocket upgrade
+  /ws/freeswitch/stream:
+    get:
+      summary: FreeSWITCH media WebSocket ingress
+      description: |
+        WebSocket contract:
+        1. Client sends a JSON `stream.start` control message with `callId` and `stream` metadata.
+        2. Server replies with `stream.ack`.
+        3. Client streams signed 16-bit PCM frames as binary messages.
+        4. Client sends `stream.stop` or closes the socket.
+        5. On protocol errors, server replies with `stream.error` and closes the socket.
+      responses:
+        "101":
+          description: WebSocket upgrade
+components:
+  schemas:
+    AckResponse:
+      type: object
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+          example: true
+    HealthResponse:
+      type: object
+      required: [status, version, checkedAt, activeSessions, services]
+      properties:
+        status:
+          $ref: "#/components/schemas/ServiceStatus"
+        version:
+          type: string
+          example: 0.1.0
+        checkedAt:
+          type: string
+          format: date-time
+        activeSessions:
+          type: integer
+          minimum: 0
+        services:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceHealth"
+    ServiceStatus:
+      type: string
+      enum:
+        - ok
+        - degraded
+        - error
+    ServiceHealth:
+      type: object
+      required: [name, status, detail]
+      properties:
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/ServiceStatus"
+        detail:
+          type: string
+        latencyMs:
+          type: integer
+          minimum: 0
+    SessionState:
+      type: string
+      enum:
+        - idle
+        - listening
+        - recognizing
+        - thinking
+        - speaking
+        - closed
+    SessionSummary:
+      type: object
+      required: [id, callId, state, caller, startedAt]
+      properties:
+        id:
+          type: string
+        callId:
+          type: string
+        state:
+          $ref: "#/components/schemas/SessionState"
+        caller:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        lastTranscript:
+          type: string
+    ProviderStatus:
+      type: object
+      required: [stt, openclaw, tts]
+      properties:
+        stt:
+          type: string
+        openclaw:
+          type: string
+        tts:
+          type: string
+    TranscriptEntry:
+      type: object
+      required: [id, text, kind, createdAt]
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        kind:
+          type: string
+          enum: [partial, final, assistant]
+        createdAt:
+          type: string
+          format: date-time
+    ProviderLatency:
+      type: object
+      required: [provider, latencyMs, updatedAt]
+      properties:
+        provider:
+          type: string
+          enum: [stt, openclaw, tts]
+        latencyMs:
+          type: integer
+          minimum: 0
+        updatedAt:
+          type: string
+          format: date-time
+    SessionLogEntry:
+      type: object
+      required: [id, level, message, source, createdAt]
+      properties:
+        id:
+          type: string
+        level:
+          type: string
+          enum: [debug, info, warn, error]
+        message:
+          type: string
+        source:
+          type: string
+          enum: [bridge, freeswitch, stt, openclaw, tts, system]
+        createdAt:
+          type: string
+          format: date-time
+    SessionDetail:
+      allOf:
+        - $ref: "#/components/schemas/SessionSummary"
+        - type: object
+          required:
+            - updatedAt
+            - bridgeNode
+            - providerStatus
+            - playbackActive
+            - transcripts
+            - recentLogs
+            - providerLatencies
+          properties:
+            updatedAt:
+              type: string
+              format: date-time
+            closedAt:
+              type: string
+              format: date-time
+              nullable: true
+            bridgeNode:
+              type: string
+            providerStatus:
+              $ref: "#/components/schemas/ProviderStatus"
+            playbackActive:
+              type: boolean
+            transcripts:
+              type: array
+              description: Empty array in current v1 skeleton until transcript timeline persistence lands.
+              items:
+                $ref: "#/components/schemas/TranscriptEntry"
+            recentLogs:
+              type: array
+              description: Empty array in current v1 skeleton until structured session logs land.
+              items:
+                $ref: "#/components/schemas/SessionLogEntry"
+            providerLatencies:
+              type: array
+              description: Empty array in current v1 skeleton until per-provider timing is tracked.
+              items:
+                $ref: "#/components/schemas/ProviderLatency"
+    ProviderSettings:
+      type: object
+      required: [stt, openclaw, tts]
+      properties:
+        stt:
+          $ref: "#/components/schemas/ProviderConfig"
+        openclaw:
+          $ref: "#/components/schemas/ProviderConfig"
+        tts:
+          $ref: "#/components/schemas/ProviderConfig"
+    ProviderConfig:
+      type: object
+      required: [vendor, endpoint, enabled]
+      properties:
+        vendor:
+          type: string
+        endpoint:
+          type: string
+        model:
+          type: string
+        enabled:
+          type: boolean
+        apiKeyHint:
+          type: string
+    DashboardEventData:
+      type: object
+      properties:
+        session:
+          $ref: "#/components/schemas/SessionSummary"
+        transcript:
+          $ref: "#/components/schemas/TranscriptEntry"
+        final:
+          type: boolean
+        text:
+          type: string
+        audioBytes:
+          type: integer
+          minimum: 0
+        state:
+          $ref: "#/components/schemas/SessionState"
+        updatedAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+    DashboardEvent:
+      type: object
+      required: [type, sessionId, timestamp, data]
+      properties:
+        type:
+          type: string
+          enum:
+            - session.created
+            - session.updated
+            - session.transcript.partial
+            - session.transcript.final
+            - session.tts.started
+            - session.tts.stopped
+            - session.closed
+        sessionId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        data:
+          $ref: "#/components/schemas/DashboardEventData"

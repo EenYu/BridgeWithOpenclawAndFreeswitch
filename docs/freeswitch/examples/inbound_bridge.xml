@@ -1,0 +1,53 @@
+<!--
+  Real-host-oriented example for FS1 after installing amigniter/mod_audio_stream.
+
+  Verified host facts:
+  - FreeSWITCH 1.10.12 is installed under /usr/local/freeswitch
+  - mod_audio_stream is now installed and loadable on FS1
+  - module syntax reported by fs_cli:
+      uuid_audio_stream <uuid> [start | stop | send_text | pause | resume | graceful-shutdown ]
+        [wss-url | path] [mono | mixed | stereo] [8000 | 16000] [metadata]
+-->
+<include>
+  <extension name="bridge_inbound_ai">
+    <condition field="destination_number" expression="^9199$">
+      <action application="set" data="bridge_public_host=127.0.0.1:8080"/>
+      <action application="set" data="bridge_ws_scheme=ws"/>
+      <action application="set" data="bridge_ws_path=/ws/freeswitch/stream"/>
+      <action application="set" data="bridge_ws_url=${bridge_ws_scheme}://${bridge_public_host}${bridge_ws_path}"/>
+
+      <action application="set" data="bridge_pcm_encoding=pcm_s16le"/>
+      <action application="set" data="bridge_pcm_rate=16000"/>
+      <action application="set" data="bridge_pcm_channels=1"/>
+      <action application="set" data="bridge_frame_ms=20"/>
+
+      <!--
+        mod_audio_stream reads these channel variables when opening the socket.
+        Keep them aligned with docs/freeswitch/integration.md.
+      -->
+      <action application="set" data="STREAM_BUFFER_SIZE=20"/>
+      <action application="set" data="STREAM_SUPPRESS_LOG=true"/>
+      <action application="set" data="STREAM_TLS_CA_FILE=SYSTEM"/>
+
+      <!--
+        The backend expects the first text frame to be the frozen stream.start
+        envelope, then binary PCM frames, then stream.stop on hangup.
+      -->
+      <action application="set" data="bridge_stream_start={&quot;type&quot;:&quot;stream.start&quot;,&quot;callId&quot;:&quot;${uuid}&quot;,&quot;caller&quot;:&quot;${caller_id_number}&quot;,&quot;stream&quot;:{&quot;encoding&quot;:&quot;${bridge_pcm_encoding}&quot;,&quot;sampleRateHz&quot;:${bridge_pcm_rate},&quot;channels&quot;:${bridge_pcm_channels}}}"/>
+      <!--
+        uuid_audio_stream is exposed as an API command, so answer and hangup
+        hooks should use api_on_answer/api_hangup_hook rather than a dialplan
+        application dispatch.
+      -->
+      <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ${bridge_ws_url} mono 16000 ${bridge_stream_start}"/>
+      <action application="set" data="session_in_hangup_hook=true"/>
+      <action application="set" data="api_hangup_hook=uuid_audio_stream ${uuid} stop"/>
+
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      <action application="playback" data="tone_stream://%(3000,0,440,480)"/>
+      <action application="sleep" data="8000"/>
+      <action application="hangup"/>
+    </condition>
+  </extension>
+</include>

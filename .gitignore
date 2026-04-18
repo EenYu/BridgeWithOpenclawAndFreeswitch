@@ -1,0 +1,26 @@
+.golutra/
+workflow.md
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Logs and temp files
+*.log
+*.tmp
+.tmp*
+tmp*
+
+# Local build artifacts
+bridge-server-linux-amd64
+bridge-server-linux-amd64-new
+backend/tmp/
