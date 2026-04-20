@@ -15,6 +15,9 @@ type fakeSTTClient struct {
 	startCalls []streamStartCall
 	pushCalls  []audioPush
 	closeCalls []string
+	startErr   error
+	pushErr    error
+	closeErr   error
 }
 
 type audioPush struct {
@@ -34,7 +37,7 @@ func (f *fakeSTTClient) StartStream(_ context.Context, sessionID string, meta se
 		sessionID: sessionID,
 		meta:      meta,
 	})
-	return nil
+	return f.startErr
 }
 
 func (f *fakeSTTClient) PushAudio(_ context.Context, sessionID string, pcm []byte) error {
@@ -42,16 +45,17 @@ func (f *fakeSTTClient) PushAudio(_ context.Context, sessionID string, pcm []byt
 		sessionID: sessionID,
 		pcm:       append([]byte(nil), pcm...),
 	})
-	return nil
+	return f.pushErr
 }
 
 func (f *fakeSTTClient) CloseStream(_ context.Context, sessionID string) error {
 	f.closeCalls = append(f.closeCalls, sessionID)
-	return nil
+	return f.closeErr
 }
 
 type fakeOpenClawClient struct {
-	replies []openClawRequest
+	replies  []openClawRequest
+	replyErr error
 }
 
 type openClawRequest struct {
@@ -64,12 +68,17 @@ func (f *fakeOpenClawClient) Reply(_ context.Context, sessionID string, transcri
 		sessionID:  sessionID,
 		transcript: transcript,
 	})
+	if f.replyErr != nil {
+		return "", f.replyErr
+	}
 	return "reply:" + transcript, nil
 }
 
 type fakeTTSClient struct {
 	synthCalls     []ttsRequest
 	interruptCalls []string
+	synthErr       error
+	interruptErr   error
 }
 
 type ttsRequest struct {
@@ -82,6 +91,9 @@ func (f *fakeTTSClient) Synthesize(_ context.Context, sessionID string, text str
 		sessionID: sessionID,
 		text:      text,
 	})
+	if f.synthErr != nil {
+		return tts.AudioPayload{}, f.synthErr
+	}
 	return tts.AudioPayload{
 		Bytes:        []byte("audio:" + text),
 		Format:       "wav",
@@ -91,7 +103,7 @@ func (f *fakeTTSClient) Synthesize(_ context.Context, sessionID string, text str
 
 func (f *fakeTTSClient) Interrupt(_ context.Context, sessionID string) error {
 	f.interruptCalls = append(f.interruptCalls, sessionID)
-	return nil
+	return f.interruptErr
 }
 
 type fakeOutputSink struct {
@@ -241,6 +253,27 @@ func TestOrchestratorFinalTranscriptTriggersOpenClawAndTTS(t *testing.T) {
 	if current.LastSentToOpenClaw != "need help" {
 		t.Fatalf("expected last sent transcript to be tracked, got %q", current.LastSentToOpenClaw)
 	}
+	if len(current.Transcripts) != 2 {
+		t.Fatalf("expected 2 transcript timeline entries, got %d", len(current.Transcripts))
+	}
+	if current.Transcripts[0].Kind != session.TranscriptKindAssistant || current.Transcripts[0].Text != "reply:need help" {
+		t.Fatalf("unexpected assistant transcript entry %+v", current.Transcripts[0])
+	}
+	if current.Transcripts[1].Kind != session.TranscriptKindFinal || current.Transcripts[1].Text != "need help" {
+		t.Fatalf("unexpected final transcript entry %+v", current.Transcripts[1])
+	}
+	if len(current.ProviderLatencies) != 3 {
+		t.Fatalf("expected 3 provider latency entries, got %d", len(current.ProviderLatencies))
+	}
+	assertProviderLatencyPresent(t, current, session.ProviderNameSTT)
+	assertProviderLatencyPresent(t, current, session.ProviderNameOpenClaw)
+	assertProviderLatencyPresent(t, current, session.ProviderNameTTS)
+	if len(current.RecentLogs) < 3 {
+		t.Fatalf("expected at least 3 recent logs, got %d", len(current.RecentLogs))
+	}
+	assertSessionLogSourcePresent(t, current, session.LogSourceSTT, session.LogLevelInfo)
+	assertSessionLogSourcePresent(t, current, session.LogSourceOpenClaw, session.LogLevelInfo)
+	assertSessionLogSourcePresent(t, current, session.LogSourceTTS, session.LogLevelInfo)
 
 	assertEventTypes(t, events.events,
 		bridgews.EventSessionCreated,
@@ -346,6 +379,95 @@ func TestOrchestratorFinalTranscriptSendsOnlyIncrementalText(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOrchestratorProviderFailuresRecordSessionBreakpoints(t *testing.T) {
+	t.Run("stt push failure", func(t *testing.T) {
+		orchestrator, sttClient, _, _, _, _, sessions := newTestOrchestrator()
+		sttClient.pushErr = context.DeadlineExceeded
+
+		created, err := orchestrator.HandleStreamStart(context.Background(), pipeline.StreamStartRequest{
+			CallID: "call-stt-failure",
+			Caller: "alice",
+			Stream: session.StreamMeta{
+				Encoding:     "pcm_s16le",
+				SampleRateHz: 16000,
+				Channels:     1,
+			},
+		})
+		if err != nil {
+			t.Fatalf("HandleStreamStart returned error: %v", err)
+		}
+
+		if err := orchestrator.HandleAudioFrame(context.Background(), created.ID, []byte{1, 2, 3}); err == nil {
+			t.Fatal("expected HandleAudioFrame to fail")
+		}
+
+		current, ok := sessions.Get(created.ID)
+		if !ok {
+			t.Fatal("expected session to exist")
+		}
+		assertSessionLogSourcePresent(t, current, session.LogSourceSTT, session.LogLevelError)
+		assertProviderLatencyPresent(t, current, session.ProviderNameSTT)
+	})
+
+	t.Run("openclaw failure", func(t *testing.T) {
+		orchestrator, _, openClawClient, _, _, _, sessions := newTestOrchestrator()
+		openClawClient.replyErr = context.DeadlineExceeded
+
+		created, err := orchestrator.HandleStreamStart(context.Background(), pipeline.StreamStartRequest{
+			CallID: "call-openclaw-failure",
+			Caller: "bob",
+			Stream: session.StreamMeta{
+				Encoding:     "pcm_s16le",
+				SampleRateHz: 16000,
+				Channels:     1,
+			},
+		})
+		if err != nil {
+			t.Fatalf("HandleStreamStart returned error: %v", err)
+		}
+
+		if err := orchestrator.HandleTranscriptFinal(context.Background(), created.ID, "need help"); err == nil {
+			t.Fatal("expected HandleTranscriptFinal to fail")
+		}
+
+		current, ok := sessions.Get(created.ID)
+		if !ok {
+			t.Fatal("expected session to exist")
+		}
+		assertSessionLogSourcePresent(t, current, session.LogSourceOpenClaw, session.LogLevelError)
+		assertProviderLatencyPresent(t, current, session.ProviderNameOpenClaw)
+	})
+
+	t.Run("tts failure", func(t *testing.T) {
+		orchestrator, _, _, ttsClient, _, _, sessions := newTestOrchestrator()
+		ttsClient.synthErr = context.DeadlineExceeded
+
+		created, err := orchestrator.HandleStreamStart(context.Background(), pipeline.StreamStartRequest{
+			CallID: "call-tts-failure",
+			Caller: "carol",
+			Stream: session.StreamMeta{
+				Encoding:     "pcm_s16le",
+				SampleRateHz: 16000,
+				Channels:     1,
+			},
+		})
+		if err != nil {
+			t.Fatalf("HandleStreamStart returned error: %v", err)
+		}
+
+		if err := orchestrator.HandleTranscriptFinal(context.Background(), created.ID, "need help"); err == nil {
+			t.Fatal("expected HandleTranscriptFinal to fail")
+		}
+
+		current, ok := sessions.Get(created.ID)
+		if !ok {
+			t.Fatal("expected session to exist")
+		}
+		assertSessionLogSourcePresent(t, current, session.LogSourceTTS, session.LogLevelError)
+		assertProviderLatencyPresent(t, current, session.ProviderNameTTS)
+	})
 }
 
 func TestOrchestratorAudioFrameInterruptsSpeakingState(t *testing.T) {
@@ -568,4 +690,26 @@ func assertClosedPayload(t *testing.T, event publishedEvent, sessionID string, c
 	if typedReason, ok := rawReason.(string); !ok || typedReason != reason {
 		t.Fatalf("unexpected closed reason payload: %#v", rawReason)
 	}
+}
+
+func assertProviderLatencyPresent(t *testing.T, current *session.Session, provider string) {
+	t.Helper()
+
+	for _, entry := range current.ProviderLatencies {
+		if entry.Provider == provider {
+			return
+		}
+	}
+	t.Fatalf("expected provider latency for %s, got %+v", provider, current.ProviderLatencies)
+}
+
+func assertSessionLogSourcePresent(t *testing.T, current *session.Session, source string, level string) {
+	t.Helper()
+
+	for _, entry := range current.RecentLogs {
+		if entry.Source == source && entry.Level == level {
+			return
+		}
+	}
+	t.Fatalf("expected session log for source=%s level=%s, got %+v", source, level, current.RecentLogs)
 }

@@ -58,12 +58,14 @@ Watch for:
 
 - Browser sends `GET /api/sessions/{id}`
 - SessionDetail renders caller, state, stream info, and provider bindings
+- Provider runtime cards show STT / OpenClaw / TTS status and detail
 - No frontend runtime error appears in Console
 
 Expected:
 
 - SessionDetail is not a blank shell
 - Summary state matches the latest Dashboard row
+- If session-level latency is still empty, provider cards fall back to `/api/health` metrics instead of staying blank
 
 ### Step 3. Speak into the live call
 

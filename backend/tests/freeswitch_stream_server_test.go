@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"bridgewithclawandfreeswitch/backend/internal/config"
 	"bridgewithclawandfreeswitch/backend/internal/freeswitch"
 	"bridgewithclawandfreeswitch/backend/internal/pipeline"
 	"bridgewithclawandfreeswitch/backend/internal/session"
@@ -285,15 +287,48 @@ func TestWebSocketStreamServerPlayWritesStreamAudioEnvelope(t *testing.T) {
 	}
 }
 
+func TestWebSocketStreamServerRejectsUnauthorizedUpgrade(t *testing.T) {
+	handler := &fakeStreamHandler{}
+	testServer, _ := newStreamTestServer(handler, bridgews.NewAccessPolicy("freeswitch", config.WebSocketEndpointConfig{
+		AuthToken: "fs-secret",
+	}))
+	defer testServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/ws/freeswitch/stream"
+	_, response, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected unauthorized websocket dial to fail")
+	}
+	if response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 unauthorized, got %#v", response)
+	}
+}
+
+func TestWebSocketStreamServerRejectsDisallowedOrigin(t *testing.T) {
+	handler := &fakeStreamHandler{}
+	testServer, _ := newStreamTestServer(handler, bridgews.NewAccessPolicy("freeswitch", config.WebSocketEndpointConfig{
+		AllowedOrigins:   []string{"https://freeswitch.example.com"},
+		AllowEmptyOrigin: false,
+	}))
+	defer testServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/ws/freeswitch/stream"
+	headers := http.Header{
+		"Origin": []string{"https://evil.example.com"},
+	}
+	_, response, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err == nil {
+		t.Fatal("expected forbidden websocket dial to fail")
+	}
+	if response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 forbidden, got %#v", response)
+	}
+}
+
 func newStreamTestConnection(t *testing.T, handler *fakeStreamHandler) (*websocket.Conn, func(), *freeswitch.WebSocketStreamServer) {
 	t.Helper()
 
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	server := freeswitch.NewWebSocketStreamServer(handler)
-	server.RegisterRoutes(engine.Group("/ws"))
-
-	testServer := httptest.NewServer(engine)
+	testServer, server := newStreamTestServer(handler, bridgews.NewAccessPolicy("freeswitch", config.WebSocketEndpointConfig{}))
 	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/ws/freeswitch/stream"
 
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -308,6 +343,14 @@ func newStreamTestConnection(t *testing.T, handler *fakeStreamHandler) (*websock
 	}
 
 	return conn, cleanup, server
+}
+
+func newStreamTestServer(handler *fakeStreamHandler, policy bridgews.AccessPolicy) (*httptest.Server, *freeswitch.WebSocketStreamServer) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	server := freeswitch.NewWebSocketStreamServer(handler, policy)
+	server.RegisterRoutes(engine.Group("/ws"))
+	return httptest.NewServer(engine), server
 }
 
 func testPCM16MonoWAV(t *testing.T, pcm []byte) []byte {

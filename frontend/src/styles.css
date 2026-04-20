@@ -136,6 +136,10 @@ a {
   font-size: 1rem;
 }
 
+.status-line {
+  margin-top: 0.5rem;
+}
+
 .app-main {
   padding: 2rem;
 }
@@ -252,8 +256,16 @@ a {
   background: var(--warning);
 }
 
+.status-warning {
+  background: var(--warning);
+}
+
 .status-error {
   background: var(--danger);
+}
+
+.status-idle {
+  background: var(--text-muted);
 }
 
 .session-table {
@@ -387,6 +399,23 @@ a {
   gap: 1.5rem;
 }
 
+.provider-runtime-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.provider-runtime-card strong {
+  display: block;
+  margin-top: 0.35rem;
+}
+
+.provider-runtime-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
 .empty-state,
 .inline-message {
   color: var(--text-muted);
@@ -420,7 +449,8 @@ a {
   }
 
   .health-grid,
-  .kv-grid {
+  .kv-grid,
+  .provider-runtime-meta {
     grid-template-columns: 1fr;
   }
 }

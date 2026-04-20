@@ -1,3 +1,5 @@
+import type { ServiceStatus } from "./health";
+
 export type SessionState =
   | "idle"
   | "listening"
@@ -5,6 +7,9 @@ export type SessionState =
   | "thinking"
   | "speaking"
   | "closed";
+
+export type ProviderKey = "stt" | "openclaw" | "tts";
+export type ProviderRuntimeStatus = ServiceStatus | "unknown";
 
 export interface SessionProviderBindings {
   stt: string;
@@ -39,9 +44,19 @@ export interface TranscriptEntry {
 }
 
 export interface ProviderLatency {
-  provider: "stt" | "openclaw" | "tts";
+  provider: ProviderKey;
   latencyMs: number;
   updatedAt: string;
+}
+
+export interface SessionProviderMetric {
+  provider: ProviderKey;
+  binding: string;
+  status: ProviderRuntimeStatus;
+  detail: string;
+  latencyMs?: number;
+  updatedAt?: string;
+  latencySource: "session" | "health" | "none";
 }
 
 export interface SessionLogEntry {
@@ -54,13 +69,9 @@ export interface SessionLogEntry {
 
 export interface SessionDetail extends SessionSummary {
   bridgeNode: string;
-  providerStatus: {
-    stt: string;
-    openclaw: string;
-    tts: string;
-  };
   playbackActive: boolean;
   transcripts: TranscriptEntry[];
   recentLogs: SessionLogEntry[];
   providerLatencies: ProviderLatency[];
+  providerMetrics: SessionProviderMetric[];
 }

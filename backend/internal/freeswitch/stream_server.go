@@ -35,6 +35,7 @@ type WebSocketStreamServer struct {
 	upgrader websocket.Upgrader
 	mu       sync.RWMutex
 	outputs  map[string]*streamOutput
+	policy   bridgews.AccessPolicy
 }
 
 type streamOutput struct {
@@ -44,13 +45,14 @@ type streamOutput struct {
 	mu     sync.Mutex
 }
 
-func NewWebSocketStreamServer(handler StreamEventHandler) *WebSocketStreamServer {
+func NewWebSocketStreamServer(handler StreamEventHandler, policy bridgews.AccessPolicy) *WebSocketStreamServer {
 	return &WebSocketStreamServer{
 		handler: handler,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(_ *http.Request) bool { return true },
 		},
 		outputs: make(map[string]*streamOutput),
+		policy:  policy,
 	}
 }
 
@@ -65,6 +67,10 @@ func (s *WebSocketStreamServer) RegisterRoutes(group gin.IRoutes) {
 func (s *WebSocketStreamServer) handleWebSocket(c *gin.Context) {
 	if s.handler == nil {
 		c.Status(http.StatusServiceUnavailable)
+		return
+	}
+	if status, err := s.policy.Validate(c.Request); err != nil {
+		c.AbortWithStatusJSON(status, gin.H{"error": err.Error()})
 		return
 	}
 

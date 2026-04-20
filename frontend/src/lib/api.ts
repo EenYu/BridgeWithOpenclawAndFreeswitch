@@ -68,8 +68,15 @@ export class BridgeApiClient {
   }
 
   async getSession(id: string): Promise<SessionDetail> {
-    const raw = await this.request(`/api/sessions/${id}`);
-    return normalizeSessionDetail(raw);
+    const [sessionRaw, healthRaw] = await Promise.all([
+      this.request(`/api/sessions/${id}`),
+      this.request("/api/health").catch(() => undefined),
+    ]);
+
+    return normalizeSessionDetail(
+      sessionRaw,
+      healthRaw ? normalizeHealthResponse(healthRaw) : undefined,
+    );
   }
 
   async saveProviderSettings(settings: ProviderSettings): Promise<ProviderSettings> {

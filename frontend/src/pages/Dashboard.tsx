@@ -46,7 +46,6 @@ function Dashboard() {
     };
 
     void load();
-    bridgeSocket.connect();
 
     const offAny = bridgeSocket.onAny((event) => {
       if (!shouldRecordDashboardLog(event)) {
@@ -77,6 +76,7 @@ function Dashboard() {
         ),
       );
     });
+    const releaseSocket = bridgeSocket.retain();
 
     return () => {
       disposed = true;
@@ -85,7 +85,7 @@ function Dashboard() {
       offUpdated();
       offClosed();
       offTranscript();
-      bridgeSocket.disconnect();
+      releaseSocket();
     };
   }, []);
 

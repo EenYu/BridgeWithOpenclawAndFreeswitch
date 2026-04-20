@@ -22,8 +22,15 @@ func main() {
 	cfg := config.Load()
 	sessionManager := session.NewManager()
 	providerStore := config.NewProviderStore(cfg.Providers)
-	hub := ws.NewHub()
-	streamServer := freeswitch.NewWebSocketStreamServer(nil)
+	hub := ws.NewHub(
+		ws.NewAccessPolicy("dashboard", cfg.WebSocket.Dashboard),
+		cfg.WebSocket.BroadcastQueueSize,
+		cfg.WebSocket.WriteTimeout,
+	)
+	streamServer := freeswitch.NewWebSocketStreamServer(
+		nil,
+		ws.NewAccessPolicy("freeswitch", cfg.WebSocket.FreeSWITCH),
+	)
 	sttClient, openClawClient, ttsClient := runtime.BuildProviderClients(cfg.Providers)
 
 	orchestrator := pipeline.NewOrchestrator(

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -94,10 +95,12 @@ func (o *Orchestrator) HandleStreamStart(ctx context.Context, req StreamStartReq
 		return nil, err
 	}
 
+	sttStartedAt := time.Now().UTC()
 	if err := o.stt.StartStream(ctx, updated.ID, updated.Stream); err != nil {
 		_, _ = o.sessions.Close(updated.ID)
 		return nil, err
 	}
+	o.recordProviderObservation(updated.ID, session.ProviderNameSTT, session.LogLevelInfo, session.LogSourceSTT, "stt stream started", time.Now().UTC(), time.Since(sttStartedAt))
 
 	o.events.Broadcast(
 		bridgews.EventSessionCreated,
@@ -124,7 +127,23 @@ func (o *Orchestrator) HandleAudioFrame(ctx context.Context, sessionID string, p
 		}
 	}
 
-	return o.stt.PushAudio(ctx, sessionID, pcm)
+	if current.PendingSTTSince == nil {
+		audioStartedAt := time.Now().UTC()
+		if _, err := o.sessions.Update(sessionID, func(working *session.Session) error {
+			working.MarkSTTPending(audioStartedAt)
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+
+	pushStartedAt := time.Now().UTC()
+	if err := o.stt.PushAudio(ctx, sessionID, pcm); err != nil {
+		o.recordProviderObservation(sessionID, session.ProviderNameSTT, session.LogLevelError, session.LogSourceSTT, "stt audio push failed: "+err.Error(), time.Now().UTC(), time.Since(pushStartedAt))
+		return err
+	}
+
+	return nil
 }
 
 func (o *Orchestrator) HandleTranscriptPartial(_ context.Context, sessionID string, transcript string) error {
@@ -132,9 +151,13 @@ func (o *Orchestrator) HandleTranscriptPartial(_ context.Context, sessionID stri
 		return ErrMissingSessionID
 	}
 
+	observedAt := time.Now().UTC()
 	updated, err := o.sessions.Update(sessionID, func(current *session.Session) error {
 		current.State = session.StateRecognizing
 		current.LastTranscript = transcript
+		if latency, ok := current.ObserveSTTResult(observedAt, false); ok {
+			current.UpdateProviderLatency(session.ProviderNameSTT, latency, observedAt)
+		}
 		return nil
 	})
 	if err != nil {
@@ -162,10 +185,16 @@ func (o *Orchestrator) HandleTranscriptFinal(ctx context.Context, sessionID stri
 		delta        string
 		previousSent string
 	)
+	observedAt := time.Now().UTC()
 	updated, err := o.sessions.Update(sessionID, func(current *session.Session) error {
 		previousSent = strings.TrimSpace(current.LastSentToOpenClaw)
 		delta = incrementalTranscript(current.LastSentToOpenClaw, transcript)
 		current.LastTranscript = transcript
+		current.AppendTranscript(session.TranscriptKindFinal, transcript, observedAt)
+		if latency, ok := current.ObserveSTTResult(observedAt, true); ok {
+			current.UpdateProviderLatency(session.ProviderNameSTT, latency, observedAt)
+			current.AppendLog(session.LogLevelInfo, session.LogSourceSTT, formatLatencyMessage("stt final transcript received", latency), observedAt)
+		}
 		if delta != "" {
 			current.State = session.StateThinking
 			current.LastSentToOpenClaw = strings.TrimSpace(transcript)
@@ -189,22 +218,40 @@ func (o *Orchestrator) HandleTranscriptFinal(ctx context.Context, sessionID stri
 	}
 
 	log.Printf("orchestrator openclaw request session=%s previous=%q current=%q delta=%q", sessionID, previousSent, strings.TrimSpace(transcript), delta)
+	openClawStartedAt := time.Now().UTC()
 	reply, err := o.openClaw.Reply(ctx, sessionID, delta)
 	if err != nil {
 		log.Printf("orchestrator openclaw reply failed session=%s: %v", sessionID, err)
+		o.recordProviderObservation(sessionID, session.ProviderNameOpenClaw, session.LogLevelError, session.LogSourceOpenClaw, "openclaw reply failed: "+err.Error(), time.Now().UTC(), time.Since(openClawStartedAt))
 		return err
+	}
+	openClawCompletedAt := time.Now().UTC()
+	openClawLatency := time.Since(openClawStartedAt)
+	if _, updateErr := o.sessions.Update(sessionID, func(current *session.Session) error {
+		current.AppendTranscript(session.TranscriptKindAssistant, reply, openClawCompletedAt)
+		current.UpdateProviderLatency(session.ProviderNameOpenClaw, openClawLatency, openClawCompletedAt)
+		current.AppendLog(session.LogLevelInfo, session.LogSourceOpenClaw, formatLatencyMessage("openclaw reply received", openClawLatency), openClawCompletedAt)
+		return nil
+	}); updateErr != nil {
+		log.Printf("orchestrator openclaw telemetry update failed session=%s: %v", sessionID, updateErr)
 	}
 	log.Printf("orchestrator openclaw reply ok session=%s delta=%q reply=%q", sessionID, delta, reply)
 
+	ttsStartedAt := time.Now().UTC()
 	audio, err := o.tts.Synthesize(ctx, sessionID, reply)
 	if err != nil {
 		log.Printf("orchestrator tts synth failed session=%s: %v", sessionID, err)
+		o.recordProviderObservation(sessionID, session.ProviderNameTTS, session.LogLevelError, session.LogSourceTTS, "tts synthesis failed: "+err.Error(), time.Now().UTC(), time.Since(ttsStartedAt))
 		return err
 	}
+	ttsCompletedAt := time.Now().UTC()
+	ttsLatency := time.Since(ttsStartedAt)
+	o.recordProviderObservation(sessionID, session.ProviderNameTTS, session.LogLevelInfo, session.LogSourceTTS, formatLatencyMessage("tts synthesis completed", ttsLatency), ttsCompletedAt, ttsLatency)
 	log.Printf("orchestrator tts synth ok session=%s audio_bytes=%d format=%s sample_rate_hz=%d", sessionID, len(audio.Bytes), audio.Format, audio.SampleRateHz)
 
 	if err := o.output.Play(ctx, sessionID, audio); err != nil {
 		log.Printf("orchestrator output play failed session=%s: %v", sessionID, err)
+		o.recordSessionLog(sessionID, session.LogLevelError, session.LogSourceBridge, "bridge playback failed: "+err.Error(), time.Now().UTC())
 		return err
 	}
 	log.Printf("orchestrator output play ok session=%s audio_bytes=%d format=%s sample_rate_hz=%d", sessionID, len(audio.Bytes), audio.Format, audio.SampleRateHz)
@@ -307,9 +354,11 @@ func (o *Orchestrator) Interrupt(ctx context.Context, sessionID string) error {
 	}
 
 	if err := o.tts.Interrupt(ctx, sessionID); err != nil {
+		o.recordProviderObservation(sessionID, session.ProviderNameTTS, session.LogLevelError, session.LogSourceTTS, "tts interrupt failed: "+err.Error(), time.Now().UTC(), 0)
 		return err
 	}
 	if err := o.output.Interrupt(ctx, sessionID); err != nil {
+		o.recordSessionLog(sessionID, session.LogLevelError, session.LogSourceBridge, "bridge playback interrupt failed: "+err.Error(), time.Now().UTC())
 		return err
 	}
 
@@ -354,6 +403,40 @@ func (o *Orchestrator) HandleHangup(ctx context.Context, sessionID string, reaso
 	o.events.Broadcast(bridgews.EventSessionClosed, closed.ID, bridgews.ClosedPayload(summary, reason))
 
 	return nil
+}
+
+func (o *Orchestrator) recordProviderObservation(sessionID string, provider string, level string, source string, message string, observedAt time.Time, latency time.Duration) {
+	_, err := o.sessions.Update(sessionID, func(current *session.Session) error {
+		if provider != "" {
+			current.UpdateProviderLatency(provider, latency, observedAt)
+		}
+		current.AppendLog(level, source, message, observedAt)
+		return nil
+	})
+	if err != nil && !errors.Is(err, session.ErrSessionNotFound) {
+		log.Printf("orchestrator provider observation update failed session=%s provider=%s: %v", sessionID, provider, err)
+	}
+}
+
+func (o *Orchestrator) recordSessionLog(sessionID string, level string, source string, message string, observedAt time.Time) {
+	_, err := o.sessions.Update(sessionID, func(current *session.Session) error {
+		current.AppendLog(level, source, message, observedAt)
+		return nil
+	})
+	if err != nil && !errors.Is(err, session.ErrSessionNotFound) {
+		log.Printf("orchestrator session log update failed session=%s source=%s: %v", sessionID, source, err)
+	}
+}
+
+func formatLatencyMessage(prefix string, latency time.Duration) string {
+	return prefix + " in " + fmtDurationMillis(latency)
+}
+
+func fmtDurationMillis(latency time.Duration) string {
+	if latency <= 0 {
+		return "0 ms"
+	}
+	return strconv.FormatInt(latency.Milliseconds(), 10) + " ms"
 }
 
 type MemoryOutputSink struct {

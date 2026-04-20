@@ -116,3 +116,40 @@ func TestProviderStoreUpdatePreservesRuntimeSecrets(t *testing.T) {
 		t.Fatalf("expected audio settings to be preserved, got %+v", updated.STT)
 	}
 }
+
+func TestLoadReadsWebSocketSecuritySettingsFromEnv(t *testing.T) {
+	t.Setenv("BRIDGE_WS_DASHBOARD_AUTH_TOKEN", "dashboard-secret")
+	t.Setenv("BRIDGE_WS_DASHBOARD_ALLOWED_ORIGINS", "https://console.example.com, http://127.0.0.1:5173")
+	t.Setenv("BRIDGE_WS_FREESWITCH_AUTH_TOKEN", "fs-secret")
+	t.Setenv("BRIDGE_WS_FREESWITCH_ALLOWED_ORIGINS", "https://fs.example.com")
+	t.Setenv("BRIDGE_WS_FREESWITCH_ALLOW_EMPTY_ORIGIN", "false")
+	t.Setenv("BRIDGE_WS_BROADCAST_QUEUE_SIZE", "64")
+	t.Setenv("BRIDGE_WS_WRITE_TIMEOUT_MS", "3500")
+
+	cfg := Load()
+
+	if cfg.WebSocket.Dashboard.AuthToken != "dashboard-secret" {
+		t.Fatalf("unexpected dashboard websocket auth token %q", cfg.WebSocket.Dashboard.AuthToken)
+	}
+	if len(cfg.WebSocket.Dashboard.AllowedOrigins) != 2 {
+		t.Fatalf("unexpected dashboard websocket origins %+v", cfg.WebSocket.Dashboard.AllowedOrigins)
+	}
+	if cfg.WebSocket.Dashboard.AllowedOrigins[0] != "https://console.example.com" {
+		t.Fatalf("unexpected first dashboard websocket origin %q", cfg.WebSocket.Dashboard.AllowedOrigins[0])
+	}
+	if cfg.WebSocket.FreeSWITCH.AuthToken != "fs-secret" {
+		t.Fatalf("unexpected freeswitch websocket auth token %q", cfg.WebSocket.FreeSWITCH.AuthToken)
+	}
+	if len(cfg.WebSocket.FreeSWITCH.AllowedOrigins) != 1 || cfg.WebSocket.FreeSWITCH.AllowedOrigins[0] != "https://fs.example.com" {
+		t.Fatalf("unexpected freeswitch websocket origins %+v", cfg.WebSocket.FreeSWITCH.AllowedOrigins)
+	}
+	if cfg.WebSocket.FreeSWITCH.AllowEmptyOrigin {
+		t.Fatalf("expected freeswitch websocket empty origin to be disabled")
+	}
+	if cfg.WebSocket.BroadcastQueueSize != 64 {
+		t.Fatalf("unexpected websocket broadcast queue size %d", cfg.WebSocket.BroadcastQueueSize)
+	}
+	if cfg.WebSocket.WriteTimeout.Milliseconds() != 3500 {
+		t.Fatalf("unexpected websocket write timeout %s", cfg.WebSocket.WriteTimeout)
+	}
+}

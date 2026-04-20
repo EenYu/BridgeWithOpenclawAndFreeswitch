@@ -166,7 +166,7 @@ components:
         - closed
     SessionSummary:
       type: object
-      required: [id, callId, state, caller, startedAt]
+      required: [id, callId, state, caller, startedAt, updatedAt, providers, stream]
       properties:
         id:
           type: string
@@ -179,8 +179,27 @@ components:
         startedAt:
           type: string
           format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+          nullable: true
         lastTranscript:
           type: string
+        providers:
+          $ref: "#/components/schemas/ProviderStatus"
+        stream:
+          type: object
+          required: [encoding, sampleRateHz, channels]
+          properties:
+            encoding:
+              type: string
+            sampleRateHz:
+              type: integer
+            channels:
+              type: integer
     ProviderStatus:
       type: object
       required: [stt, openclaw, tts]
@@ -263,17 +282,17 @@ components:
               type: boolean
             transcripts:
               type: array
-              description: Empty array in current v1 skeleton until transcript timeline persistence lands.
+              description: Most recent transcript timeline entries, newest first.
               items:
                 $ref: "#/components/schemas/TranscriptEntry"
             recentLogs:
               type: array
-              description: Empty array in current v1 skeleton until structured session logs land.
+              description: Most recent provider and bridge log entries, newest first.
               items:
                 $ref: "#/components/schemas/SessionLogEntry"
             providerLatencies:
               type: array
-              description: Empty array in current v1 skeleton until per-provider timing is tracked.
+              description: Latest per-provider latency snapshots for the active session.
               items:
                 $ref: "#/components/schemas/ProviderLatency"
     ProviderSettings:

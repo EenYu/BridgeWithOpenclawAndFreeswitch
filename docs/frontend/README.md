@@ -162,13 +162,16 @@ Expected:
 - Opening `/sessions/:id` issues `GET /api/sessions/{id}`
 - Summary section shows caller, bridge node, playback state, stream info, and providers
 - Transcript timeline renders existing transcript entries when available
-- Empty states remain readable when optional backend arrays are empty
+- Provider runtime cards render STT / OpenClaw / TTS binding, status, detail, and latency
+- When `providerLatencies` is empty, the page falls back to `/api/health.services[].status/detail/latencyMs` instead of staying in a permanent placeholder state
+- Empty states remain readable if both detail and health responses omit optional metrics
 
 Failure checks:
 
 - session ID route does not match backend lookup ID
 - backend returns `404 session not found`
 - detail payload shape diverged from `normalizeSessionDetail`
+- `/api/health` is failing, so runtime cards can only show bindings and no live provider metrics
 
 ### 5. Interrupt flow
 
@@ -201,6 +204,7 @@ For the current frontend behavior:
 
 - Dashboard still trusts `session.transcript.final` as the complete utterance and does not aggregate partials
 - SessionDetail aggregates repeated partial frames so incremental STT updates remain readable while recognition is in progress
+- SessionDetail provider runtime cards prefer session-level latency data, and otherwise fall back to the latest health snapshot for status/detail/latency
 - Verifying what OpenClaw actually received still requires backend log or request inspection; the frontend can only confirm the UI-side transcript rendering
 
 ### 7. Settings page verification

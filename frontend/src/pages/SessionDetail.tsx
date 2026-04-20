@@ -4,7 +4,12 @@ import EventLogPanel from "../components/EventLogPanel";
 import { apiClient } from "../lib/api";
 import { buildLogEntryFromEvent } from "../lib/event-log";
 import { bridgeSocket } from "../lib/ws";
-import type { SessionDetail as SessionDetailType, SessionLogEntry, TranscriptEntry } from "../types/session";
+import type {
+  SessionDetail as SessionDetailType,
+  SessionLogEntry,
+  SessionProviderMetric,
+  TranscriptEntry,
+} from "../types/session";
 import type { BridgeEvent } from "../types/ws";
 
 const PARTIAL_TRANSCRIPT_FLUSH_MS = 150;
@@ -33,7 +38,9 @@ function SessionDetail() {
         }
       } catch (loadError) {
         if (!disposed) {
-          setError(loadError instanceof Error ? loadError.message : "加载会话详情失败");
+          setError(
+            loadError instanceof Error ? loadError.message : "Failed to load session detail",
+          );
         }
       }
     };
@@ -69,7 +76,6 @@ function SessionDetail() {
     };
 
     void loadSession();
-    bridgeSocket.connect();
 
     const offAny = bridgeSocket.onAny((event) => {
       const eventSessionId = resolveEventSessionId(event);
@@ -186,6 +192,8 @@ function SessionDetail() {
       );
     });
 
+    const releaseSocket = bridgeSocket.retain();
+
     return () => {
       disposed = true;
       if (partialFlushTimerRef.current !== null) {
@@ -200,7 +208,7 @@ function SessionDetail() {
       offClosed();
       offTtsStarted();
       offTtsStopped();
-      bridgeSocket.disconnect();
+      releaseSocket();
     };
   }, [sessionId]);
 
@@ -216,7 +224,9 @@ function SessionDetail() {
       setSession(nextDetail);
       setError(null);
     } catch (interruptError) {
-      setError(interruptError instanceof Error ? interruptError.message : "中断会话失败");
+      setError(
+        interruptError instanceof Error ? interruptError.message : "Failed to interrupt session",
+      );
     } finally {
       setPendingInterrupt(false);
     }
@@ -228,7 +238,10 @@ function SessionDetail() {
         <div>
           <p className="eyebrow">Session Detail</p>
           <h2>{session?.callId ?? sessionId}</h2>
-          <p>详情页直接读取当前会话，并对未落地字段做前端占位降级。</p>
+          <p>
+            Read the live session record, aggregate transcript events, and surface provider
+            runtime metrics without relying on long-lived placeholder text.
+          </p>
         </div>
         <div className="button-row">
           <button
@@ -246,7 +259,9 @@ function SessionDetail() {
 
       {!session ? (
         <section className="surface">
-          <p className="empty-state">等待 `GET /api/sessions/{'{id}'}` 返回详情数据。</p>
+          <p className="empty-state">
+            Waiting for `GET /api/sessions/{'{id}'}` to return session detail.
+          </p>
         </section>
       ) : (
         <div className="session-detail-grid">
@@ -254,7 +269,10 @@ function SessionDetail() {
             <header className="surface-header">
               <div>
                 <h3>Session summary</h3>
-                <p>聚合通话标识、状态、最近转写、桥接节点与实时播放状态。</p>
+                <p>
+                  Call identity, bridge node, playback state, and current stream bindings for the
+                  selected session.
+                </p>
               </div>
               <span className="meta-pill">{session.state}</span>
             </header>
@@ -279,7 +297,8 @@ function SessionDetail() {
               <div className="surface">
                 <p className="eyebrow">Stream</p>
                 <strong>
-                  {session.stream.encoding} / {session.stream.sampleRateHz}Hz / {session.stream.channels}ch
+                  {session.stream.encoding} / {session.stream.sampleRateHz}Hz /{" "}
+                  {session.stream.channels}ch
                 </strong>
               </div>
               <div className="surface">
@@ -294,13 +313,18 @@ function SessionDetail() {
               <header className="surface-header">
                 <div>
                   <h4>Transcript timeline</h4>
-                  <p>按 partial / final / assistant 分类展示对话片段。</p>
+                  <p>
+                    Shows partial, final, and assistant transcript entries in reverse chronological
+                    order.
+                  </p>
                 </div>
                 <span className="meta-pill">{session.transcripts.length} entries</span>
               </header>
 
               {session.transcripts.length === 0 ? (
-                <p className="empty-state">当前还没有转写事件。</p>
+                <p className="empty-state">
+                  No transcript events have been recorded for this session yet.
+                </p>
               ) : (
                 <div className="log-list">
                   {session.transcripts.map((entry) => (
@@ -320,30 +344,56 @@ function SessionDetail() {
             <section className="surface">
               <header className="surface-header">
                 <div>
-                  <h3>Provider latency</h3>
-                  <p>为 STT、OpenClaw 和 TTS 预留毫秒级耗时展示位。</p>
+                  <h3>Provider runtime</h3>
+                  <p>
+                    Session bindings merged with backend health status, latency, and runtime
+                    detail for STT, OpenClaw, and TTS.
+                  </p>
                 </div>
+                <span className="meta-pill">{session.providerMetrics.length} providers</span>
               </header>
 
-              {session.providerLatencies.length === 0 ? (
-                <p className="empty-state">后端暂未提供延迟指标，页面保持稳定降级展示。</p>
-              ) : (
-                <div className="section-stack">
-                  {session.providerLatencies.map((latency) => (
-                    <div className="surface" key={latency.provider}>
-                      <p className="eyebrow">{latency.provider.toUpperCase()}</p>
-                      <strong>{latency.latencyMs} ms</strong>
-                      <p className="inline-message">
-                        Last updated {new Date(latency.updatedAt).toLocaleString()}
-                      </p>
+              <div className="provider-runtime-grid">
+                {session.providerMetrics.map((metric) => (
+                  <article className="surface provider-runtime-card" key={metric.provider}>
+                    <div className="split-header">
+                      <div>
+                        <p className="eyebrow">{metric.provider.toUpperCase()}</p>
+                        <strong>{metric.binding}</strong>
+                      </div>
+                      <span className="status-indicator">
+                        <span
+                          className={`status-dot ${resolveProviderMetricStatusClassName(metric.status)}`}
+                        />
+                        {resolveProviderMetricStatusLabel(metric.status)}
+                      </span>
                     </div>
-                  ))}
-                </div>
-              )}
+
+                    <p className="inline-message">{metric.detail}</p>
+
+                    <div className="provider-runtime-meta">
+                      <div>
+                        <p className="eyebrow">Latency</p>
+                        <strong>{formatProviderLatency(metric)}</strong>
+                      </div>
+                      <div>
+                        <p className="eyebrow">Source</p>
+                        <strong>{formatLatencySource(metric)}</strong>
+                      </div>
+                    </div>
+
+                    {metric.updatedAt ? (
+                      <p className="inline-message">
+                        Updated {new Date(metric.updatedAt).toLocaleString()}
+                      </p>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
             </section>
 
             <EventLogPanel
-              description="聚焦当前会话的桥接、FreeSWITCH 与 Provider 事件。"
+              description="Focused event stream for the selected session, including bridge, FreeSWITCH, and provider activity."
               entries={session.recentLogs}
               title="Session log"
             />
@@ -394,7 +444,10 @@ function upsertLatestPartialTranscript(
   return [next, ...current].slice(0, 50);
 }
 
-function prependFinalTranscript(current: TranscriptEntry[], next: TranscriptEntry): TranscriptEntry[] {
+function prependFinalTranscript(
+  current: TranscriptEntry[],
+  next: TranscriptEntry,
+): TranscriptEntry[] {
   const rest = current[0]?.kind === "partial" ? current.slice(1) : current;
   return [next, ...rest].slice(0, 50);
 }
@@ -409,7 +462,11 @@ function upsertRecentLog(current: SessionLogEntry[], next: SessionLogEntry): Ses
   }
 
   if (existingIndex > 0) {
-    return [merged, ...current.slice(0, existingIndex), ...current.slice(existingIndex + 1)].slice(0, 50);
+    return [
+      merged,
+      ...current.slice(0, existingIndex),
+      ...current.slice(existingIndex + 1),
+    ].slice(0, 50);
   }
 
   return [next, ...current].slice(0, 50);
@@ -421,7 +478,10 @@ function mergePartialLogEntry(previous: SessionLogEntry, next: SessionLogEntry):
   }
 
   const prefix = resolveLogPrefix(next.message);
-  const mergedText = mergeTranscriptText(extractLogText(previous.message), extractLogText(next.message));
+  const mergedText = mergeTranscriptText(
+    extractLogText(previous.message),
+    extractLogText(next.message),
+  );
 
   return {
     ...next,
@@ -463,7 +523,10 @@ function mergeTranscriptText(previous: string, incoming: string): string {
       return incoming;
     }
 
-    const normalizedPrefixLength = findCommonPrefixLength(normalizedPrevious, normalizedIncoming);
+    const normalizedPrefixLength = findCommonPrefixLength(
+      normalizedPrevious,
+      normalizedIncoming,
+    );
     if (
       normalizedPrefixLength >= 2 &&
       normalizedIncoming.length >= Math.floor(normalizedPrevious.length * 0.8)
@@ -505,7 +568,50 @@ function findCommonPrefixLength(previous: string, incoming: string): number {
 }
 
 function normalizeTranscriptText(value: string): string {
-  return value.replace(/[\s,.!?;:，。！？；：、]/g, "");
+  return value.replace(/[\s,.!?;:，。！；：]/g, "");
+}
+
+function resolveProviderMetricStatusClassName(
+  status: SessionProviderMetric["status"],
+): string {
+  switch (status) {
+    case "ok":
+      return "status-ok";
+    case "degraded":
+      return "status-degraded";
+    case "error":
+      return "status-error";
+    default:
+      return "status-idle";
+  }
+}
+
+function resolveProviderMetricStatusLabel(status: SessionProviderMetric["status"]): string {
+  switch (status) {
+    case "ok":
+      return "Healthy";
+    case "degraded":
+      return "Degraded";
+    case "error":
+      return "Error";
+    default:
+      return "Unknown";
+  }
+}
+
+function formatProviderLatency(metric: SessionProviderMetric): string {
+  return metric.latencyMs !== undefined ? `${metric.latencyMs} ms` : "Not reported";
+}
+
+function formatLatencySource(metric: SessionProviderMetric): string {
+  switch (metric.latencySource) {
+    case "session":
+      return "Session detail";
+    case "health":
+      return "Health snapshot";
+    default:
+      return "No latency source";
+  }
 }
 
 export default SessionDetail;

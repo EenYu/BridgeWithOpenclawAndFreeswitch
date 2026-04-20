@@ -1,4 +1,5 @@
 import { NavLink, Route, Routes } from "react-router-dom";
+import { useBridgeConnection } from "./lib/use-bridge-connection";
 import Dashboard from "./pages/Dashboard";
 import SessionDetail from "./pages/SessionDetail";
 import Settings from "./pages/Settings";
@@ -9,6 +10,8 @@ const navigationItems = [
 ];
 
 function App() {
+  const connection = useBridgeConnection();
+
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
@@ -34,6 +37,15 @@ function App() {
           ))}
         </nav>
         <section className="sidebar-note">
+          <p className="eyebrow">Realtime Socket</p>
+          <div className="status-indicator status-line">
+            <span className={`status-dot ${resolveConnectionStatusClassName(connection.state)}`} />
+            <strong>{resolveConnectionLabel(connection.state)}</strong>
+          </div>
+          <p>{buildConnectionSummary(connection.state, connection.activeConsumers, connection.reconnectAttempt)}</p>
+          {connection.lastError ? <p className="inline-message">{connection.lastError}</p> : null}
+        </section>
+        <section className="sidebar-note">
           <p className="eyebrow">Current Focus</p>
           <strong>Bridge health, call sessions, provider wiring.</strong>
           <p>
@@ -52,6 +64,49 @@ function App() {
       </main>
     </div>
   );
+}
+
+function resolveConnectionLabel(state: ReturnType<typeof useBridgeConnection>["state"]): string {
+  switch (state) {
+    case "connected":
+      return "Connected";
+    case "connecting":
+      return "Connecting";
+    case "reconnecting":
+      return "Reconnecting";
+    default:
+      return "Idle";
+  }
+}
+
+function resolveConnectionStatusClassName(state: ReturnType<typeof useBridgeConnection>["state"]): string {
+  switch (state) {
+    case "connected":
+      return "status-ok";
+    case "connecting":
+      return "status-warning";
+    case "reconnecting":
+      return "status-warning";
+    default:
+      return "status-idle";
+  }
+}
+
+function buildConnectionSummary(
+  state: ReturnType<typeof useBridgeConnection>["state"],
+  activeConsumers: number,
+  reconnectAttempt: number,
+): string {
+  switch (state) {
+    case "connected":
+      return `${activeConsumers} page subscriptions are sharing the live event stream.`;
+    case "connecting":
+      return `Opening the shared event stream for ${activeConsumers} active page subscriptions.`;
+    case "reconnecting":
+      return `Retry ${reconnectAttempt} is in flight while ${activeConsumers} page subscriptions stay attached.`;
+    default:
+      return "No page is actively consuming realtime events right now.";
+  }
 }
 
 export default App;

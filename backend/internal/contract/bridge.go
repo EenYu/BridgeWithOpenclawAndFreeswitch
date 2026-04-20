@@ -32,12 +32,16 @@ type HealthResponse struct {
 }
 
 type SessionSummary struct {
-	ID             string               `json:"id"`
-	CallID         string               `json:"callId"`
-	State          session.SessionState `json:"state"`
-	Caller         string               `json:"caller"`
-	StartedAt      time.Time            `json:"startedAt"`
-	LastTranscript string               `json:"lastTranscript,omitempty"`
+	ID             string                   `json:"id"`
+	CallID         string                   `json:"callId"`
+	State          session.SessionState     `json:"state"`
+	Caller         string                   `json:"caller"`
+	StartedAt      time.Time                `json:"startedAt"`
+	UpdatedAt      time.Time                `json:"updatedAt"`
+	ClosedAt       *time.Time               `json:"closedAt,omitempty"`
+	LastTranscript string                   `json:"lastTranscript,omitempty"`
+	Providers      session.ProviderBindings `json:"providers"`
+	Stream         session.StreamMeta       `json:"stream"`
 }
 
 type TranscriptEntry struct {
@@ -118,11 +122,45 @@ func SessionSummaryFromSession(current *session.Session) SessionSummary {
 		State:          current.State,
 		Caller:         current.Caller,
 		StartedAt:      current.StartedAt,
+		UpdatedAt:      current.UpdatedAt,
+		ClosedAt:       current.ClosedAt,
 		LastTranscript: current.LastTranscript,
+		Providers:      current.Providers,
+		Stream:         current.Stream,
 	}
 }
 
 func SessionDetailFromSession(current *session.Session, nodeName string) SessionDetail {
+	transcripts := make([]TranscriptEntry, 0, len(current.Transcripts))
+	for _, entry := range current.Transcripts {
+		transcripts = append(transcripts, TranscriptEntry{
+			ID:        entry.ID,
+			Text:      entry.Text,
+			Kind:      entry.Kind,
+			CreatedAt: entry.CreatedAt,
+		})
+	}
+
+	recentLogs := make([]SessionLogEntry, 0, len(current.RecentLogs))
+	for _, entry := range current.RecentLogs {
+		recentLogs = append(recentLogs, SessionLogEntry{
+			ID:        entry.ID,
+			Level:     entry.Level,
+			Message:   entry.Message,
+			Source:    entry.Source,
+			CreatedAt: entry.CreatedAt,
+		})
+	}
+
+	latencies := make([]ProviderLatency, 0, len(current.ProviderLatencies))
+	for _, entry := range current.ProviderLatencies {
+		latencies = append(latencies, ProviderLatency{
+			Provider:  entry.Provider,
+			LatencyMs: entry.LatencyMs,
+			UpdatedAt: entry.UpdatedAt,
+		})
+	}
+
 	return SessionDetail{
 		SessionSummary: SessionSummaryFromSession(current),
 		UpdatedAt:      current.UpdatedAt,
@@ -134,9 +172,9 @@ func SessionDetailFromSession(current *session.Session, nodeName string) Session
 			TTS:      current.Providers.TTS,
 		},
 		PlaybackActive:    current.State == session.StateSpeaking,
-		Transcripts:       []TranscriptEntry{},
-		RecentLogs:        []SessionLogEntry{},
-		ProviderLatencies: []ProviderLatency{},
+		Transcripts:       transcripts,
+		RecentLogs:        recentLogs,
+		ProviderLatencies: latencies,
 	}
 }
 

@@ -1,10 +1,12 @@
 import type { HealthStatus, ServiceHealth, ServiceStatus } from "../types/health";
 import type { ProviderConfig, ProviderSettings } from "../types/providers";
 import type {
+  ProviderKey,
   ProviderLatency,
   SessionDetail,
   SessionLogEntry,
   SessionProviderBindings,
+  SessionProviderMetric,
   SessionState,
   SessionSummary,
   StreamMeta,
@@ -65,8 +67,14 @@ export interface BackendSession {
   playbackActive?: boolean;
   transcripts?: TranscriptEntry[];
   recentLogs?: SessionLogEntry[];
-  providerLatencies?: ProviderLatency[];
-  providerStatus?: Partial<SessionDetail["providerStatus"]>;
+  providerLatencies?: BackendProviderLatency[];
+  providerStatus?: Partial<Record<ProviderKey, string>>;
+}
+
+interface BackendProviderLatency {
+  provider?: string;
+  latencyMs?: number;
+  updatedAt?: string;
 }
 
 interface BackendTranscriptPayload {
@@ -107,6 +115,8 @@ const DEFAULT_PROVIDER_CONFIG: ProviderConfig = {
   enabled: false,
 };
 
+const PROVIDER_KEYS: ProviderKey[] = ["stt", "openclaw", "tts"];
+
 export function normalizeProviderSettings(raw?: BackendProviders): ProviderSettings {
   return {
     stt: normalizeProviderConfig(raw?.stt),
@@ -131,7 +141,7 @@ export function normalizeHealthResponse(raw: BackendHealthResponse): HealthStatu
       ? raw.services.map((service) => ({
           name: service.name ?? "unknown",
           status: normalizeServiceStatus(service.status),
-          detail: service.detail ?? "未提供详情",
+          detail: service.detail ?? "No detail reported",
           latencyMs: service.latencyMs,
         }))
       : buildProviderServices(providerSettings);
@@ -159,7 +169,7 @@ export function normalizeSessionSummary(raw: BackendSession): SessionSummary {
   return {
     id,
     callId: raw.callId ?? id,
-    caller: raw.caller ?? "未知来电",
+    caller: raw.caller ?? "Unknown caller",
     state: normalizeSessionState(raw.state),
     startedAt: normalizeTimestamp(raw.startedAt),
     updatedAt,
@@ -170,7 +180,10 @@ export function normalizeSessionSummary(raw: BackendSession): SessionSummary {
   };
 }
 
-export function normalizeSessionDetail(raw: BackendSession): SessionDetail {
+export function normalizeSessionDetail(
+  raw: BackendSession,
+  health?: HealthStatus,
+): SessionDetail {
   const summary = normalizeSessionSummary(raw);
   const normalizedProviders: SessionProviderBindings = {
     stt: raw.providers?.stt ?? raw.providerStatus?.stt ?? summary.providers.stt,
@@ -181,6 +194,10 @@ export function normalizeSessionDetail(raw: BackendSession): SessionDetail {
       summary.providers.openclaw,
     tts: raw.providers?.tts ?? raw.providerStatus?.tts ?? summary.providers.tts,
   };
+  const providerLatencies =
+    raw.providerLatencies?.map((entry) =>
+      normalizeProviderLatency(entry, summary.updatedAt),
+    ).filter((entry): entry is ProviderLatency => entry !== null) ?? [];
 
   const seededTranscript =
     summary.lastTranscript && summary.lastTranscript.trim().length > 0
@@ -197,12 +214,7 @@ export function normalizeSessionDetail(raw: BackendSession): SessionDetail {
   return {
     ...summary,
     providers: normalizedProviders,
-    bridgeNode: raw.bridgeNode ?? "待后端补充",
-    providerStatus: {
-      stt: raw.providerStatus?.stt ?? describeProvider(normalizedProviders.stt),
-      openclaw: raw.providerStatus?.openclaw ?? describeProvider(normalizedProviders.openclaw),
-      tts: raw.providerStatus?.tts ?? describeProvider(normalizedProviders.tts),
-    },
+    bridgeNode: raw.bridgeNode ?? "Waiting for backend node",
     playbackActive:
       typeof raw.playbackActive === "boolean"
         ? raw.playbackActive
@@ -213,10 +225,12 @@ export function normalizeSessionDetail(raw: BackendSession): SessionDetail {
         : seededTranscript,
     recentLogs:
       raw.recentLogs?.map((entry) => normalizeLogEntry(entry, summary.updatedAt)) ?? [],
-    providerLatencies:
-      raw.providerLatencies?.map((entry) =>
-        normalizeProviderLatency(entry, summary.updatedAt),
-      ) ?? [],
+    providerLatencies,
+    providerMetrics: buildSessionProviderMetrics(
+      normalizedProviders,
+      providerLatencies,
+      health,
+    ),
   };
 }
 
@@ -292,7 +306,7 @@ export function normalizeBridgeEvent(raw: unknown): BridgeEvent | null {
                   ? (data.level as SessionLogEntry["level"])
                   : "info",
               message:
-                typeof data.message === "string" ? data.message : "收到未命名日志事件",
+                typeof data.message === "string" ? data.message : "Received unnamed log event",
               source:
                 typeof data.source === "string"
                   ? (data.source as SessionLogEntry["source"])
@@ -342,7 +356,7 @@ function buildProviderService(name: string, config: ProviderConfig): ServiceHeal
   return {
     name,
     status: config.enabled ? "ok" : "degraded",
-    detail: config.endpoint || (config.enabled ? "已启用" : "未启用"),
+    detail: config.endpoint || (config.enabled ? "Enabled" : "Disabled"),
   };
 }
 
@@ -455,13 +469,18 @@ function normalizeLogEntry(raw: SessionLogEntry, fallbackTimestamp: string): Ses
 }
 
 function normalizeProviderLatency(
-  raw: ProviderLatency,
+  raw: BackendProviderLatency,
   fallbackTimestamp: string,
-): ProviderLatency {
+): ProviderLatency | null {
+  const provider = coerceProviderKey(raw?.provider);
+  if (!provider) {
+    return null;
+  }
+
   return {
-    provider: raw.provider,
-    latencyMs: raw.latencyMs,
-    updatedAt: normalizeTimestamp(raw.updatedAt ?? fallbackTimestamp),
+    provider,
+    latencyMs: raw?.latencyMs ?? 0,
+    updatedAt: normalizeTimestamp(raw?.updatedAt ?? fallbackTimestamp),
   };
 }
 
@@ -477,7 +496,7 @@ function extractEventSession(
   return {
     id: sessionId,
     callId: typeof data.callId === "string" ? data.callId : sessionId,
-    caller: typeof data.caller === "string" ? data.caller : "未知来电",
+    caller: typeof data.caller === "string" ? data.caller : "Unknown caller",
     state: typeof data.state === "string" ? data.state : "idle",
     startedAt: typeof data.startedAt === "string" ? data.startedAt : timestamp,
     updatedAt: timestamp,
@@ -502,8 +521,53 @@ function resolveSessionId(
   return "unknown-session";
 }
 
-function describeProvider(name: string): string {
-  return name && name !== "unknown" ? `已绑定 ${name}` : "待后端补充";
+function buildSessionProviderMetrics(
+  bindings: SessionProviderBindings,
+  latencies: ProviderLatency[],
+  health?: HealthStatus,
+): SessionProviderMetric[] {
+  return PROVIDER_KEYS.map((provider) => {
+    const binding = bindings[provider];
+    const latency = latencies.find((entry) => entry.provider === provider);
+    const service = health?.services.find((entry) => entry.name === provider);
+
+    return {
+      provider,
+      binding,
+      status: service?.status ?? (binding !== "unknown" ? "unknown" : "degraded"),
+      detail: buildProviderMetricDetail(provider, binding, service),
+      latencyMs: latency?.latencyMs ?? service?.latencyMs,
+      updatedAt: latency?.updatedAt ?? (service ? health?.checkedAt : undefined),
+      latencySource: latency ? "session" : service?.latencyMs !== undefined ? "health" : "none",
+    };
+  });
+}
+
+function buildProviderMetricDetail(
+  provider: ProviderKey,
+  binding: string,
+  service?: ServiceHealth,
+): string {
+  if (service?.detail) {
+    return service.detail;
+  }
+
+  if (binding && binding !== "unknown") {
+    return `Session is bound to ${binding}.`;
+  }
+
+  return `No runtime detail reported for ${provider} yet.`;
+}
+
+function coerceProviderKey(raw: string | undefined): ProviderKey | null {
+  switch (raw) {
+    case "stt":
+    case "openclaw":
+    case "tts":
+      return raw;
+    default:
+      return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

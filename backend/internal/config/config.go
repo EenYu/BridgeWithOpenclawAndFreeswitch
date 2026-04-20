@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,8 @@ const (
 	defaultOpenClawOrigin   = "http://127.0.0.1"
 	defaultTTSNamespace     = "BidirectionalTTS"
 	defaultVolcengineTTSRID = "volc.service_type.10029"
+	defaultWSWriteTimeout   = 2 * time.Second
+	defaultWSBroadcastQueue = 32
 )
 
 type Config struct {
@@ -23,6 +26,20 @@ type Config struct {
 	Version           string
 	NodeName          string
 	Providers         Providers
+	WebSocket         WebSocketConfig
+}
+
+type WebSocketEndpointConfig struct {
+	AuthToken        string
+	AllowedOrigins   []string
+	AllowEmptyOrigin bool
+}
+
+type WebSocketConfig struct {
+	Dashboard          WebSocketEndpointConfig
+	FreeSWITCH         WebSocketEndpointConfig
+	BroadcastQueueSize int
+	WriteTimeout       time.Duration
 }
 
 type ProviderConfig struct {
@@ -105,6 +122,14 @@ func Load() Config {
 				ResourceID:   defaultVolcengineTTSRID,
 			}),
 		},
+		WebSocket: WebSocketConfig{
+			Dashboard: loadWebSocketEndpointConfig("BRIDGE_WS_DASHBOARD", WebSocketEndpointConfig{}),
+			FreeSWITCH: loadWebSocketEndpointConfig("BRIDGE_WS_FREESWITCH", WebSocketEndpointConfig{
+				AllowEmptyOrigin: true,
+			}),
+			BroadcastQueueSize: getenvIntDefault("BRIDGE_WS_BROADCAST_QUEUE_SIZE", defaultWSBroadcastQueue),
+			WriteTimeout:       getenvDurationMSDefault("BRIDGE_WS_WRITE_TIMEOUT_MS", defaultWSWriteTimeout),
+		},
 	}
 }
 
@@ -172,6 +197,14 @@ func defaultAPIKeyHeader(authType string) string {
 	return ""
 }
 
+func loadWebSocketEndpointConfig(prefix string, defaults WebSocketEndpointConfig) WebSocketEndpointConfig {
+	return WebSocketEndpointConfig{
+		AuthToken:        os.Getenv(prefix + "_AUTH_TOKEN"),
+		AllowedOrigins:   getenvCSV(prefix + "_ALLOWED_ORIGINS"),
+		AllowEmptyOrigin: getenvBoolDefault(prefix+"_ALLOW_EMPTY_ORIGIN", defaults.AllowEmptyOrigin),
+	}
+}
+
 func getenvDefault(name string, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
@@ -186,6 +219,26 @@ func getenvFirstNonEmpty(names ...string) string {
 		}
 	}
 	return ""
+}
+
+func getenvCSV(name string) []string {
+	value := os.Getenv(name)
+	if value == "" {
+		return nil
+	}
+
+	parts := make([]string, 0)
+	for _, item := range strings.Split(value, ",") {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		parts = append(parts, trimmed)
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return parts
 }
 
 func getenvBoolDefault(name string, fallback bool) bool {
